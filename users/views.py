@@ -1,12 +1,16 @@
 # IMPORTS
-from flask import Blueprint, render_template, flash, redirect, url_for
+import pyotp
+from flask import Blueprint, render_template, flash, redirect, url_for, session, request
+from flask_login import login_user
 import re
 import bcrypt
-from cryptography.fernet import Fernet
+from markupsafe import Markup
+from flask_login import logout_user, current_user
+from datetime import datetime
 
-from app import db
+from app import db, logger
 from models import User
-from users.forms import RegisterForm
+from users.forms import RegisterForm, LoginForm
 
 # CONFIG
 users_blueprint = Blueprint('users', __name__, template_folder='templates')
@@ -93,6 +97,8 @@ def register():
             db.session.add(new_user)
             db.session.commit()
 
+            logger.warning("SECURITY - User Registration [%s, %s]", form.email.data, request.remote_addr)
+
             # sends user to login page
             return redirect(url_for('users.login'))
 
@@ -101,21 +107,92 @@ def register():
 
 
 # view user login
-@users_blueprint.route('/login')
+@users_blueprint.route('/login', methods=['GET', 'POST'])
 def login():
-    return render_template('users/login.html')
+    if not session.get("login_attempts"):
+        session["login_attempts"] = 0
+
+    form = LoginForm()
+
+    if form.validate_on_submit():
+        email = form.email.data
+        password = form.password.data
+
+        user = User.query.filter_by(email=email).first()
+        salt = user.pw_salt
+        hashed_password = bcrypt.hashpw(password.encode('UTF-8'), salt)
+        pin = pyotp.TOTP(user.pin_key)
+
+        if not user or hashed_password != user.password or not pin.verify(form.pin.data):
+            logger.warning("SECURITY - Invalid login attempt [%s, %s]", form.email.data, request.remote_addr)
+
+            session["login_attempts"] += 1
+            if session.get("login_attempts") >= 3:
+                flash(Markup('Number of incorrect login attempts exceeded. Please click <a href="/reset">here</a> to '
+                             'reset.'))
+                return render_template('users/login.html')
+            else:
+                flash(f"Some information you entered was incorrect! You have {3 - session.get('login_attempts')}"
+                      f" attempts remaining.")
+                return render_template('users/login.html', form=form)
+        else:
+            login_user(user)
+            logger.warning("SECURITY - User Login [%s, %s, %s]", user.id, user.email, request.remote_addr)
+
+            user.last_login = user.current_login
+            user.current_login = datetime.now()
+            db.session.add(user)
+            db.session.commit()
+
+            if user.role == "user":
+                return redirect(url_for("users.profile"))
+            else:
+                return redirect(url_for("admin.admin"))
+
+    return render_template('users/login.html', form=form)
 
 
 # view user profile
 @users_blueprint.route('/profile')
 def profile():
-    return render_template('users/profile.html', name="PLACEHOLDER FOR FIRSTNAME")
+    if current_user.is_anonymous:
+        logger.warning("SECURITY - Invalid access attempt [%s, %s] accessing /profile", "ANONYMOUS", request.remote_addr)
+        return redirect(url_for("users.login"))
+
+    user = User.query.filter_by(id=current_user.id).first()
+    return render_template('users/profile.html', name=user.firstname)
 
 
 # view user account
 @users_blueprint.route('/account')
 def account():
+    if current_user.is_anonymous:
+        logger.warning("SECURITY - Invalid access attempt [%s, %s] accessing /account", "ANONYMOUS", request.remote_addr)
+        return redirect(url_for("users.login"))
+
+    user = User.query.filter_by(id=current_user.id).first()
     return render_template('users/account.html',
-                           acc_no="PLACEHOLDER FOR USER ID", email="PLACEHOLDER FOR USER EMAIL",
-                           firstname="PLACEHOLDER FOR USER FIRSTNAME", lastname="PLACEHOLDER FOR USER LASTNAME",
-                           phone="PLACEHOLDER FOR USER PHONE")
+                           acc_no=user.id, email=user.email,
+                           firstname=user.firstname, lastname=user.lastname,
+                           phone=user.phone)
+
+
+# reset login attempts
+@users_blueprint.route('/reset')
+def reset():
+    session["login_attempts"] = 0
+    return redirect(url_for('users.login'))
+
+
+# logout
+@users_blueprint.route('/logout')
+def logout():
+    if current_user.is_anonymous:
+        logger.warning("SECURITY - Invalid access attempt [%s, %s] accessing /logout", "ANONYMOUS", request.remote_addr)
+        return redirect(url_for('index'))
+
+    logger.warning("SECURITY - User Logout [%s, %s, %s]", current_user.id, current_user.email, request.remote_addr)
+
+    logout_user()
+
+    return redirect(url_for('index'))

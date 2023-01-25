@@ -1,6 +1,8 @@
+import pyotp
 from flask_login import UserMixin
 from app import db
 from cryptography.fernet import Fernet
+from datetime import datetime
 
 
 class User(db.Model, UserMixin):
@@ -13,12 +15,17 @@ class User(db.Model, UserMixin):
     password = db.Column(db.String(100), nullable=False)
     pw_salt = db.Column(db.String(100), nullable=False, unique=True)
     key = db.Column(db.BLOB, nullable=False, unique=True)
+    pin_key = db.Column(db.String(100), nullable=False)
 
     # User information
     firstname = db.Column(db.String(100), nullable=False)
     lastname = db.Column(db.String(100), nullable=False)
     phone = db.Column(db.String(100), nullable=False)
     role = db.Column(db.String(100), nullable=False, default='user')
+
+    registered_on = db.Column(db.DateTime, nullable=False)
+    current_login = db.Column(db.DateTime, nullable=True)
+    last_login = db.Column(db.DateTime, nullable=True)
 
     # Define the relationship to Draw
     draws = db.relationship('Draw')
@@ -32,6 +39,10 @@ class User(db.Model, UserMixin):
         self.pw_salt = pw_salt
         self.role = role
         self.key = Fernet.generate_key()
+        self.pin_key = pyotp.random_base32()
+        self.registered_on = datetime.now()
+        self.current_login = None
+        self.last_login = None
 
 
 class Draw(db.Model):

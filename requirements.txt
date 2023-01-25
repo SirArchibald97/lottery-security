@@ -1,6 +1,10 @@
-Flask
+Flask~=2.2.2
 flask_sqlalchemy
 flask_login
 flask_wtf
-bcrypt
-cryptography
+bcrypt~=4.0.1
+cryptography~=38.0.1
+WTForms~=3.0.1
+pyotp
+Flask-Login
+Flask-Talisman

@@ -1,7 +1,8 @@
 # IMPORTS
-from flask import Blueprint, render_template, request, flash
-from app import db
-from models import User, Draw
+from flask import Blueprint, render_template, request, flash, redirect, url_for
+from app import db, logger
+from models import User, Draw, decrypt
+from flask_login import current_user
 
 # CONFIG
 admin_blueprint = Blueprint('admin', __name__, template_folder='templates')
@@ -11,21 +12,31 @@ admin_blueprint = Blueprint('admin', __name__, template_folder='templates')
 # view admin homepage
 @admin_blueprint.route('/admin')
 def admin():
-    return render_template('admin/admin.html', name="PLACEHOLDER FOR FIRSTNAME")
+    if current_user.is_anonymous:
+        logger.warning("SECURITY - Invalid access attempt [%s, %s] accessing /admin", "ANONYMOUS", request.remote_addr)
+        return render_template("403.html")
+
+    user = User.query.filter_by(id=current_user.id).first()
+    if user.role == "user":
+        logger.warning("SECURITY - Invalid access attempt [%s, %s, %s, %s] accessing /admin", user.id, user.email,
+                       user.role, request.remote_addr)
+        return redirect(url_for("users.profile"))
+
+    print(user.firstname)
+    return render_template('admin/admin.html', name=user.firstname)
 
 
 # view all registered users
 @admin_blueprint.route('/view_all_users', methods=['POST'])
 def view_all_users():
+    user = User.query.filter_by(id=current_user.id).first()
     current_users = User.query.filter_by(role='user').all()
-
-    return render_template('admin/admin.html', name="PLACEHOLDER FOR FIRSTNAME", current_users=current_users)
+    return render_template('admin/admin.html', name=user.firstname, current_users=current_users)
 
 
 # create a new winning draw
 @admin_blueprint.route('/create_winning_draw', methods=['POST'])
 def create_winning_draw():
-
     # get current winning draw
     current_winning_draw = Draw.query.filter_by(master_draw=True).first()
     lottery_round = 1
@@ -47,7 +58,7 @@ def create_winning_draw():
     submitted_draw.strip()
 
     # create a new draw object with the form data.
-    new_winning_draw = Draw(user_id=0, numbers=submitted_draw, master_draw=True, lottery_round=lottery_round)
+    new_winning_draw = Draw(current_user.id, numbers=submitted_draw, master_draw=True, lottery_round=lottery_round)
 
     # add the new winning draw to the database
     db.session.add(new_winning_draw)
@@ -61,14 +72,27 @@ def create_winning_draw():
 # view current winning draw
 @admin_blueprint.route('/view_winning_draw', methods=['POST'])
 def view_winning_draw():
+    if current_user.is_anonymous:
+        return render_template("users/login.html")
+
+    user = User.query.filter_by(id=current_user.id).first()
+    if user.role != "admin":
+        return render_template("users/profile.html")
 
     # get winning draw from DB
-    current_winning_draw = Draw.query.filter_by(master_draw=True,been_played=False).first()
+    current_winning_draw = Draw.query.filter_by(master_draw=True, been_played=False).first()
 
     # if a winning draw exists
     if current_winning_draw:
         # re-render admin page with current winning draw and lottery round
-        return render_template('admin/admin.html', winning_draw=current_winning_draw, name="PLACEHOLDER FOR FIRSTNAME")
+        submitting_user = User.query.filter_by(id=current_winning_draw.user_id).first()
+        decrypted_winning_draw = decrypt(current_winning_draw.numbers, submitting_user.key)
+        winning_draw_round = current_winning_draw.lottery_round
+        print(current_winning_draw.numbers)
+        print(decrypted_winning_draw)
+
+        return render_template('admin/admin.html', winning_draw=decrypted_winning_draw, lottery_round=winning_draw_round,
+                               name=user.firstname)
 
     # if no winning draw exists, rerender admin page
     flash("No valid winning draw exists. Please add new winning draw.")
@@ -78,11 +102,10 @@ def view_winning_draw():
 # view lottery results and winners
 @admin_blueprint.route('/run_lottery', methods=['POST'])
 def run_lottery():
-
     # get current unplayed winning draw
     current_winning_draw = Draw.query.filter_by(master_draw=True, been_played=False).first()
 
-    # if current unplayed winning draw exists
+    # if current unplayed winning draw existsa
     if current_winning_draw:
 
         # get all unplayed user draws
@@ -140,8 +163,9 @@ def run_lottery():
 # view last 10 log entries
 @admin_blueprint.route('/logs', methods=['POST'])
 def logs():
+    user = User.query.filter_by(id=current_user.id).first()
     with open("lottery.log", "r") as f:
         content = f.read().splitlines()[-10:]
         content.reverse()
 
-    return render_template('admin/admin.html', logs=content, name="PLACEHOLDER FOR FIRSTNAME")
+    return render_template('admin/admin.html', logs=content, name=user.firstname)
